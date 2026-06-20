@@ -1,0 +1,39 @@
+akhil@akhils-MacBook-Air EdgeMindMedPhi % adb logcat -s InferenceTool:D SlmInferenceEngine:D ExecuTorchRunner:D ExecuTorchJNI:D
+--------- beginning of main
+06-20 11:19:58.035  1761  1761 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:19:58.037  1761  1761 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:19:58.039  1761  1761 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:19:58.040  1761  1761 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:19:58.043  1761  1761 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:19:58.074  1761  2091 W ExecuTorchRunner: Model not found: minilm_embed.pte — mock mode active
+06-20 11:19:58.819  1761  2091 I ExecuTorchJNI: Loading model: /storage/emulated/0/Android/data/com.edgemind.debug/files/models/medi_phi_int4.pte
+06-20 11:19:59.825  1761  2091 I ExecuTorchJNI: Model loaded, handle=1
+06-20 11:19:59.825  1761  2091 I ExecuTorchJNI: forward() expects 1 input(s)
+06-20 11:19:59.825  1761  2091 I ExecuTorchJNI:   input[0]: shape=[1,13,] dtype=4
+06-20 11:19:59.827  1761  2091 I ExecuTorchJNI: Loading tokenizer: /data/user/0/com.edgemind.debug/cache/tokenizer.model
+06-20 11:19:59.880  1761  2091 I ExecuTorchJNI: Tokenizer loaded, handle=1
+06-20 11:19:59.883  1761  2091 W ExecuTorchRunner: Model not found: llm_7b.pte — mock mode active
+06-20 11:19:59.884  1761  2091 I ExecuTorchJNI: Loading tokenizer: /data/user/0/com.edgemind.debug/cache/tokenizer.model
+06-20 11:19:59.942  1761  2091 I ExecuTorchJNI: Tokenizer loaded, handle=2
+06-20 11:20:44.850  1761  2092 E ExecuTorchJNI: forward() failed: error=16
+06-20 11:20:44.859  1761  2092 D InferenceTool: SLM: conf=0.5 latency=18644ms
+06-20 11:20:44.860  1761  2092 D InferenceTool: SLM confidence 0.5 < threshold — triggering RAG
+06-20 11:20:44.925  1761  2092 E ExecuTorchJNI: forward() failed: error=16
+06-20 11:20:44.926  1761  2092 D InferenceTool: RAG: conf=0.5 latency=21ms
+06-20 11:20:44.926  1761  2092 D InferenceTool: RAG confidence 0.5 still below threshold — LLM escalation
+06-20 11:24:56.847 16465 16465 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:24:56.848 16465 16465 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:24:56.850 16465 16465 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:24:56.851 16465 16465 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:24:56.853 16465 16465 I ExecuTorchRunner: ExecuTorch native library loaded
+06-20 11:24:56.875 16465 16512 W ExecuTorchRunner: Model not found: minilm_embed.pte — mock mode active
+06-20 11:24:57.524 16465 16512 I ExecuTorchJNI: Loading model: /storage/emulated/0/Android/data/com.edgemind.debug/files/models/medi_phi_int4.pte
+06-20 11:24:58.431 16465 16512 I ExecuTorchJNI: Model loaded, handle=1
+06-20 11:24:58.431 16465 16512 I ExecuTorchJNI: forward() expects 1 input(s)
+06-20 11:24:58.431 16465 16512 I ExecuTorchJNI:   input[0]: shape=[1,13,] dtype=4
+06-20 11:24:58.433 16465 16512 I ExecuTorchJNI: Loading tokenizer: /data/user/0/com.edgemind.debug/cache/tokenizer.model
+06-20 11:24:58.479 16465 16512 I ExecuTorchJNI: Tokenizer loaded, handle=1
+06-20 11:24:58.482 16465 16512 W ExecuTorchRunner: Model not found: llm_7b.pte — mock mode active
+06-20 11:24:58.483 16465 16512 I ExecuTorchJNI: Loading tokenizer: /data/user/0/com.edgemind.debug/cache/tokenizer.model
+06-20 11:24:58.532 16465 16512 I ExecuTorchJNI: Tokenizer loaded, handle=2
+06-20 11:25:03.347 16465 16512 D InferenceTool: Forced LLM escalation
