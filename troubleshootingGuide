@@ -210,3 +210,10 @@ ExecuTorchJNI: Tokenizer loaded, handle=1
 ```
 (The `shape=[1,6,]` here is exactly the Issue 11 limitation — a future
 re-export should show a dynamic/larger bound instead.)
+
+
+>>>>>>>>
+
+BenchMarking numbers:
+>>>>>>
+For 100,000 chunks: needed for RAG
