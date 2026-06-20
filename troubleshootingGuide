@@ -217,3 +217,25 @@ re-export should show a dynamic/larger bound instead.)
 BenchMarking numbers:
 >>>>>>
 For 100,000 chunks: needed for RAG
+
+Commmands to build:
+./gradlew assembleDebug  
+adb install -r app/build/outputs/apk/debug/app-debug.apk  
+adb logcat -s InferenceTool:D SlmInferenceEngine:D ExecuTorchRunner:D ExecuTorchJNI:D
+adb shell ls -l /sdcard/Android/data/com.edgemind.debug/files/models/medi_phi_int4.pte
+
+// Push the models to phone:
+--
+adb push local_models/medi_phi_int4.pte /sdcard/Android/data/com.edgemind.debug/files/models/medi_phi_int4.pte
+
+
+
+
+=======
+Questions:
+===
+1. Why after every update ; I'll have to reinstall the app?
+
+
+
+
