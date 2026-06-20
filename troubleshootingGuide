@@ -1,0 +1,212 @@
+# ExecuTorch build & on-device inference — setup log and troubleshooting
+
+This documents how the SLM (Phi-3 mini) path was wired up to run real
+on-device ExecuTorch inference instead of `SlmInferenceEngine`'s mock
+fallback, and every build error hit along the way. Use it as a reference
+the next time a build breaks in this area.
+
+## One-time environment setup
+
+1. **Python venv for the ExecuTorch build** (kept separate from system
+   Python so it doesn't fight with other projects' torch/transformers
+   versions):
+   ```bash
+   /opt/homebrew/bin/python3.11 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install --upgrade pip
+   ```
+
+2. **Clone ExecuTorch from source** (gitignored — it's a build dependency,
+   not vendored source):
+   ```bash
+   git clone --depth 1 --branch main https://github.com/pytorch/executorch.git
+   cd executorch
+   git submodule sync
+   git submodule update --init --recursive --depth 1
+   ```
+
+3. **Install ExecuTorch's Python build deps** (pulls a matching
+   torch/torchao/transformers set into the venv):
+   ```bash
+   source ../.venv/bin/activate
+   ./install_executorch.sh
+   ```
+
+4. **Build the native library for arm64-v8a**:
+   ```bash
+   source ../.venv/bin/activate
+   export ANDROID_NDK=/Users/akhil/Library/Android/sdk/ndk/25.1.8937393
+   export PYTHON_EXECUTABLE=python3
+   cmake . -DCMAKE_INSTALL_PREFIX=cmake-out-android-arm64-v8a \
+     -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+     -DPYTHON_EXECUTABLE=python3 --preset android-arm64-v8a \
+     -DANDROID_PLATFORM=android-26 -B cmake-out-android-arm64-v8a
+   cmake --build cmake-out-android-arm64-v8a -j 7 --target install --config Release
+   ```
+   This produces `executorch/cmake-out-android-arm64-v8a/`, containing the
+   exported CMake package (`lib/cmake/ExecuTorch/executorch-config.cmake`)
+   that `app/CMakeLists.txt` consumes — see below. Do **not** try to use
+   `scripts/build_android_library.sh` directly under this tool's shell: its
+   `uname`/`[ == ]` check breaks under zsh (see Issue 2).
+
+## How the app consumes the build
+
+`app/CMakeLists.txt` does **not** look for a prebuilt `libexecutorch.so`.
+It consumes ExecuTorch's own exported CMake package via `find_package
+(executorch CONFIG)`, pointed at the install tree above. This was a
+deliberate choice over hand-picking raw `.a` link order: the exported
+targets (`extension_module_static`, `extension_tensor`,
+`optimized_native_cpu_ops_lib`, `quantized_ops_lib`, `custom_ops`,
+`xnnpack_backend`, `extension_llm_runner`) carry their own correct
+transitive dependency graph.
+
+`cpp/executorch_jni.cpp` implements the JNI bridge by hand (not via
+ExecuTorch's official Android AAR/Java API) using:
+- `executorch::extension::module::Module` for model load/forward
+- `executorch::extension::from_blob` for tensor construction
+- `executorch::extension::llm::load_tokenizer()` for the tokenizer (auto-
+  detects HF JSON / TikToken / SentencePiece / BPE format)
+
+## Known issues and fixes (in the order they were hit)
+
+### 1. `AttributeError: module 'torch' has no attribute 'int1'`
+Installed `torchao` was newer than installed `torch` (torchao referenced
+sub-byte dtypes that don't exist in the older torch). Fix: reinstall the
+versions pinned in `requirements.txt` (`torchao==0.5.0`,
+`transformers==4.44.2`) for the **system** Python env used by the export
+scripts. The dedicated `.venv` for the ExecuTorch *build* avoids this
+entirely by installing its own consistent torch/torchao pair via
+`install_executorch.sh`.
+
+### 2. `build_android_library.sh` dies silently after CMake configure
+`set -ex` + `if [ "$(uname)" == "Darwin" ]` breaks when the script is
+*sourced* into zsh (zsh's `[ ]` doesn't support `==`). The pipe
+(`... | tail -100`) also masks the real exit code, since the pipeline's
+exit status becomes `tail`'s. Fix: run `cmake --build ... --target
+install` directly instead of relying on the script's job-count logic.
+
+### 3. `cmake_install.cmake: file INSTALL cannot set modification time ... No such file or directory`
+Transient filesystem hiccup during a parallel (`-j N`) install copying
+many header files at once. Fix: retry with `-j 1`.
+
+### 4. `app/CMakeLists.txt`: `find_package(executorch)` silently falls back to stub mode
+`CMAKE_PREFIX_PATH`-based discovery doesn't reliably match a package
+directory named `ExecuTorch` (mixed case) when the package name passed to
+`find_package` is lowercase `executorch`. Fix: set `executorch_DIR`
+directly to the exact `lib/cmake/ExecuTorch` directory instead of relying
+on prefix-path globbing.
+
+### 5. `CMake 3.24 or higher is required. You are running version 3.22.1`
+The Android-SDK-bundled CMake (pinned via `version = "3.22.1"` in
+`app/build.gradle.kts`) is older than what ExecuTorch's exported config
+requires. `local.properties`'s `cmake.dir` is **not** a real AGP property
+(common misconception) — it has no effect. Fix: manufacture an SDK-style
+CMake package directory pointing at a newer system CMake, and bump the
+declared version to match:
+```bash
+mkdir -p ~/Library/Android/sdk/cmake/3.31.0/bin
+ln -sf /opt/homebrew/Cellar/cmake/4.3.1/bin/cmake   ~/Library/Android/sdk/cmake/3.31.0/bin/cmake
+ln -sf /opt/homebrew/Cellar/cmake/4.3.1/bin/ctest   ~/Library/Android/sdk/cmake/3.31.0/bin/ctest
+ln -sf /opt/homebrew/Cellar/cmake/4.3.1/bin/cpack   ~/Library/Android/sdk/cmake/3.31.0/bin/cpack
+ln -sf /opt/homebrew/Cellar/cmake/4.3.1/bin/ccmake  ~/Library/Android/sdk/cmake/3.31.0/bin/ccmake
+ln -sf <path-to-ninja>                              ~/Library/Android/sdk/cmake/3.31.0/bin/ninja
+```
+and set `version = "3.31.0"` in `app/build.gradle.kts`'s
+`externalNativeBuild.cmake` block.
+
+### 6. `The link interface of target "cpuinfo" contains: absl::log ... but the target was not found`
+`find_dependency(absl REQUIRED)` inside ExecuTorch's `tokenizers-config.cmake`
+resolved to some *other*, mismatched `absl`/`re2` install elsewhere on the
+system search path instead of the one cross-compiled for Android in our
+tree. Fix: pin the transitive package dirs explicitly in
+`app/CMakeLists.txt` before `find_package(executorch CONFIG)`:
+```cmake
+set(absl_DIR "${_et_cmake_out}/lib/cmake/absl")
+set(re2_DIR "${_et_cmake_out}/lib/cmake/re2")
+set(tokenizers_DIR "${_et_cmake_out}/lib/cmake/tokenizers")
+set(executorch_DIR "${_et_cmake_out}/lib/cmake/ExecuTorch")
+```
+
+### 7. `non-constant-expression cannot be narrowed from type 'int64_t' to 'int'`
+`executorch::aten::SizesType` is a 32-bit int in this (lean/portable)
+build, not `int64_t`. Any `std::vector<int64_t>` passed to `from_blob()`'s
+sizes parameter needs to be a `std::vector<SizesType>` instead. Fixed in
+both `nativeForward` and `nativeForwardFloat` in `cpp/executorch_jni.cpp`.
+
+### 8. Gradle `:app:compressDebugAssets` → `OutOfMemoryError: Required array size too large`
+AGP's asset-compression step reads the whole asset into a Java array
+before deflating it, which has a hard ~2GB ceiling. The `phi3_mini_int4.pte`
+(2.49GB) blew past it — and `androidResources { noCompress += listOf
+("pte") }` does **not** fix this, because the failure happens before the
+compression-vs-store decision is even made; it's reading the file into
+memory unconditionally. Fix: don't put multi-GB model weights through
+Android's asset pipeline at all. Moved the `.pte` to `local_models/` at
+the repo root (gitignored) and `adb push` it directly to
+`context.getExternalFilesDir("models")` at runtime; `tokenizer.model`
+(488KB) stays a normal bundled asset.
+`ExecuTorchRunner.kt`'s `resolveModelPath()` checks the external files dir
+first, falling back to the bundled asset.
+
+### 9. App stays in mock mode even with a valid model + tokenizer on device
+Not a build error — a wiring bug. `AssistantViewModel.initialise()` called
+`rag.initialize()` (which loads the embedding model) but never called
+`slm.load()` / `llm.load()`. `InferenceTool.route()` goes straight to
+`slm.runInference()` without loading first, so `ExecuTorchRunner.isReady`
+stayed permanently `false` regardless of what was on disk. Fix: added
+```kotlin
+slm.load()
+llm.load()
+```
+right after `rag.initialize()` in `AssistantViewModel.kt`.
+
+### 10. `adb install` → `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`
+Android showed an on-device install-confirmation dialog that timed out
+unapproved. Fix: just retry `adb install -r ...` and tap "Install" on the
+phone when prompted.
+
+### 11. `forward() failed: error=16` (`Error::NotSupported`) after ~18s of real compute
+Not a build/wiring issue — a property of the specific `.pte` file. Added
+diagnostic logging to `cpp/executorch_jni.cpp`'s `nativeLoad` (dumps
+`Module::method_meta("forward")`'s expected input count/shape/dtype) and to
+`nativeForward` (logs the numeric `Error` code on failure). This revealed
+`forward()` expects a **static** `[1, 6]` int64 input — the model was
+exported with a fixed 6-token context (most likely a quick smoke-test
+export without `dynamic_shapes`), so any real prompt (which tokenizes to
+far more than 6 tokens) fails — most likely hitting a position-dependent
+constant (e.g. a rotary-embedding cache) sized for only 6 positions, given
+that failure takes ~18s of real computation rather than failing instantly
+on a shape check. **Fix is to re-export the model** with
+`torch.export.Dim("seq_len", min=1, max=max_seq_len)` actually succeeding
+(see `scripts/export_phi3.py`'s `_try_export`) — this has not been done
+yet.
+
+## Useful diagnostic commands
+
+```bash
+# Device connectivity (wireless ADB drops frequently — prefer USB if flaky)
+adb devices -l
+
+# Confirm the pushed model size matches the source file exactly
+adb shell stat -c '%s' /sdcard/Android/data/com.edgemind.debug/files/models/phi3_mini_int4.pte
+
+# Watch model/tokenizer load + inference in real time
+adb logcat -s "ExecuTorchJNI:*" "ExecuTorchRunner:*" "Tokenizer:*" "InferenceTool:*" "AssistantViewModel:*"
+
+# Full install -> relaunch -> log cycle after a rebuild
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am force-stop com.edgemind.debug
+adb shell monkey -p com.edgemind.debug -c android.intent.category.LAUNCHER 1
+```
+
+A clean successful load looks like:
+```
+ExecuTorchJNI: Loading model: .../phi3_mini_int4.pte
+ExecuTorchJNI: Model loaded, handle=1
+ExecuTorchJNI: forward() expects 1 input(s)
+ExecuTorchJNI:   input[0]: shape=[1,6,] dtype=4
+ExecuTorchJNI: Loading tokenizer: .../tokenizer.model
+ExecuTorch: Loaded Sentencepiece tokenizer
+ExecuTorchJNI: Tokenizer loaded, handle=1
+```
+(The `shape=[1,6,]` here is exactly the Issue 11 limitation — a future
+re-export should show a dynamic/larger bound instead.)
