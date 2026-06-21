@@ -240,6 +240,23 @@ Questions:
 ===
 1. Why after every update ; I'll have to reinstall the app?
 
+error:
+akhil@akhils-MacBook-Air EdgeMindMedPhi % adb logcat | grep -i "ExecuTorchJNI"
+06-21 06:13:55.231  6041  6327 I ExecuTorchJNI: Loading model: /storage/emulated/0/Android/data/com.edgemind.debug/files/models/medi_phi_int4.pte
+06-21 06:13:56.692  6041  6327 I ExecuTorchJNI: Model loaded, handle=1
+06-21 06:13:56.692  6041  6327 I ExecuTorchJNI: forward() expects 1 input(s)
+06-21 06:13:56.692  6041  6327 I ExecuTorchJNI:   input[0]: shape=[1,13,] dtype=4
+06-21 06:13:56.694  6041  6327 I ExecuTorchJNI: Loading tokenizer: /data/user/0/com.edgemind.debug/cache/tokenizer.model
+06-21 06:13:56.745  6041  6327 I ExecuTorchJNI: Tokenizer loaded, handle=1
+06-21 06:13:56.748  6041  6327 I ExecuTorchJNI: Loading tokenizer: /data/user/0/com.edgemind.debug/cache/tokenizer.model
+06-21 06:13:56.792  6041  6327 I ExecuTorchJNI: Tokenizer loaded, handle=2
+06-21 06:13:56.797  6041  6327 I ExecuTorchJNI: Loading tokenizer: /data/user/0/com.edgemind.debug/cache/tokenizer.model
+06-21 06:13:56.840  6041  6327 I ExecuTorchJNI: Tokenizer loaded, handle=3
+06-21 06:14:00.362  6041  6328 I ExecuTorchJNI: Input tensor shape=[1,41]
+06-21 06:14:18.024  6041  6328 E ExecuTorchJNI: forward() failed: error=16 (input_len=41)
+06-21 06:14:18.024  6041  6328 E ExecuTorchJNI: Error 16 (NotSupported) usually indicates the model expects a static input shape. Check nativeLoad logs for expected shape.
+
+
 
 
 
