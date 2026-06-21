@@ -231,6 +231,10 @@ adb push local_models/medi_phi_int4.pte /sdcard/Android/data/com.edgemind.debug/
 
 adb shell ls -l /sdcard/Android/data/com.edgemind.debug/files/models/
 
+
+If real inferencing:
+adb logcat | grep -i "ExecuTorchJNI"
+
 =======
 Questions:
 ===
