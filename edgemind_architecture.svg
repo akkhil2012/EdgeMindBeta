@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="800" viewBox="0 0 1040 800" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M2 1 L8 5 L2 9" fill="none" stroke="#9AA7B4" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="8" y="8" width="1024" height="784" rx="20" fill="#FBFAF7" stroke="#E6E2D8" stroke-width="1"/>
+
+  <text x="40" y="52" font-size="27" font-weight="700" fill="#13315C">EdgeMind</text>
+  <text x="40" y="76" font-size="13" fill="#5F6B7A">On-device AI governance platform &#183; system architecture</text>
+  <line x1="40" y1="90" x2="1000" y2="90" stroke="#ECE8DE" stroke-width="1"/>
+
+  <!-- R1 Application -->
+  <rect x="40" y="108" width="712" height="60" rx="10" fill="#E8EEF5" stroke="#13315C" stroke-width="1"/>
+  <text x="396" y="134" font-size="15" font-weight="700" fill="#13315C" text-anchor="middle">Android application</text>
+  <text x="396" y="153" font-size="12" fill="#5F6B7A" text-anchor="middle">Query input &#183; response rendering</text>
+
+  <!-- R2 Identity & screening -->
+  <rect x="40" y="198" width="346" height="60" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+  <text x="213" y="224" font-size="15" font-weight="700" fill="#0F6E56" text-anchor="middle">ES256 JWT authentication</text>
+  <text x="213" y="243" font-size="12" fill="#5F6B7A" text-anchor="middle">Android Keystore-backed identity</text>
+
+  <rect x="406" y="198" width="346" height="60" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+  <text x="579" y="224" font-size="15" font-weight="700" fill="#0F6E56" text-anchor="middle">GuardModel</text>
+  <text x="579" y="243" font-size="12" fill="#5F6B7A" text-anchor="middle">Input + output screening</text>
+
+  <!-- R3 Governance (emphasis) -->
+  <rect x="40" y="288" width="712" height="68" rx="10" fill="#13315C" stroke="#0F6E56" stroke-width="2"/>
+  <text x="396" y="318" font-size="16" font-weight="700" fill="#FFFFFF" text-anchor="middle">MCP governance control plane</text>
+  <text x="396" y="339" font-size="12" fill="#9FE1CB" text-anchor="middle">Policy enforcement &#183; &#8220;the policy is the protocol&#8221;</text>
+
+  <!-- R4 Orchestration -->
+  <rect x="40" y="386" width="346" height="60" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+  <text x="213" y="412" font-size="15" font-weight="700" fill="#0F6E56" text-anchor="middle">Intent router</text>
+  <text x="213" y="431" font-size="12" fill="#5F6B7A" text-anchor="middle">Gemma 3 270M</text>
+
+  <rect x="406" y="386" width="346" height="60" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+  <text x="579" y="412" font-size="15" font-weight="700" fill="#0F6E56" text-anchor="middle">Confidence-gated router</text>
+  <text x="579" y="431" font-size="12" fill="#5F6B7A" text-anchor="middle">0.75 threshold</text>
+
+  <!-- R5 Inference tiers -->
+  <rect x="40" y="476" width="224" height="66" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+  <text x="152" y="503" font-size="15" font-weight="700" fill="#0F6E56" text-anchor="middle">Tier 1 &#183; SLM</text>
+  <text x="152" y="522" font-size="12" fill="#5F6B7A" text-anchor="middle">Phi-3 Mini INT4</text>
+
+  <rect x="284" y="476" width="224" height="66" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+  <text x="396" y="503" font-size="15" font-weight="700" fill="#0F6E56" text-anchor="middle">Tier 2 &#183; RAG</text>
+  <text x="396" y="522" font-size="12" fill="#5F6B7A" text-anchor="middle">FAISS retrieval</text>
+
+  <rect x="528" y="476" width="224" height="66" rx="10" fill="#FAEEDA" stroke="#BA7517" stroke-width="1"/>
+  <text x="640" y="503" font-size="15" font-weight="700" fill="#854F0B" text-anchor="middle">Tier 3 &#183; LLM</text>
+  <text x="640" y="522" font-size="12" fill="#8A6A33" text-anchor="middle">Cloud fallback</text>
+
+  <!-- R6 Runtime + adaptation -->
+  <rect x="40" y="572" width="346" height="60" rx="10" fill="#E8EEF5" stroke="#13315C" stroke-width="1"/>
+  <text x="213" y="598" font-size="15" font-weight="700" fill="#13315C" text-anchor="middle">ExecuTorch runtime</text>
+  <text x="213" y="617" font-size="12" fill="#5F6B7A" text-anchor="middle">HTP &#8594; Vulkan &#8594; XNNPACK</text>
+
+  <rect x="406" y="572" width="346" height="60" rx="10" fill="#E8EEF5" stroke="#13315C" stroke-width="1"/>
+  <text x="579" y="598" font-size="15" font-weight="700" fill="#13315C" text-anchor="middle">On-device LoRA</text>
+  <text x="579" y="617" font-size="12" fill="#5F6B7A" text-anchor="middle">rank-8 &#183; alpha-16</text>
+
+  <!-- R7 Audit persistence -->
+  <rect x="40" y="662" width="712" height="60" rx="10" fill="#E8EEF5" stroke="#13315C" stroke-width="2"/>
+  <text x="396" y="688" font-size="15" font-weight="700" fill="#13315C" text-anchor="middle">SHA-256 append-only audit journal</text>
+  <text x="396" y="707" font-size="12" fill="#5F6B7A" text-anchor="middle">Room DB &#183; tamper-evident &#183; every stage logged</text>
+
+  <!-- Flow arrows -->
+  <line x1="396" y1="168" x2="396" y2="196" stroke="#9AA7B4" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line x1="396" y1="258" x2="396" y2="286" stroke="#9AA7B4" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line x1="396" y1="356" x2="396" y2="384" stroke="#9AA7B4" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line x1="396" y1="446" x2="396" y2="474" stroke="#9AA7B4" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line x1="396" y1="542" x2="396" y2="570" stroke="#9AA7B4" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line x1="396" y1="632" x2="396" y2="660" stroke="#9AA7B4" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- Right panel: domain swap -->
+  <rect x="776" y="198" width="224" height="434" rx="12" fill="#F4F2EC" stroke="#CFC9BC" stroke-width="1"/>
+  <text x="792" y="226" font-size="14" font-weight="700" fill="#0F6E56">Domain swap</text>
+  <text x="792" y="244" font-size="11" fill="#5F6B7A">Hot-swap per vertical</text>
+  <line x1="792" y1="256" x2="984" y2="256" stroke="#E0DBCF" stroke-width="1"/>
+
+  <text x="792" y="278" font-size="11" font-weight="700" fill="#8A8576" letter-spacing="0.5">DOMAIN PACK</text>
+  <rect x="792" y="286" width="192" height="26" rx="6" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1"/>
+  <text x="804" y="303" font-size="12" fill="#0F6E56" font-family="monospace">corpus.jsonl</text>
+  <rect x="792" y="318" width="192" height="26" rx="6" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1"/>
+  <text x="804" y="335" font-size="12" fill="#0F6E56" font-family="monospace">domain.faiss</text>
+  <rect x="792" y="350" width="192" height="26" rx="6" fill="#FFFFFF" stroke="#0F6E56" stroke-width="1"/>
+  <text x="804" y="367" font-size="12" fill="#0F6E56" font-family="monospace">model.pte</text>
+
+  <text x="792" y="402" font-size="11" font-weight="700" fill="#8A8576" letter-spacing="0.5">VERTICALS</text>
+  <rect x="792" y="410" width="92" height="28" rx="6" fill="#E8EEF5" stroke="#13315C" stroke-width="0.8"/>
+  <text x="838" y="428" font-size="11" fill="#13315C" text-anchor="middle">Pharma</text>
+  <rect x="892" y="410" width="92" height="28" rx="6" fill="#E8EEF5" stroke="#13315C" stroke-width="0.8"/>
+  <text x="938" y="428" font-size="11" fill="#13315C" text-anchor="middle">Logistics</text>
+  <rect x="792" y="444" width="92" height="28" rx="6" fill="#E8EEF5" stroke="#13315C" stroke-width="0.8"/>
+  <text x="838" y="462" font-size="11" fill="#13315C" text-anchor="middle">Oil &amp; gas</text>
+  <rect x="892" y="444" width="92" height="28" rx="6" fill="#E8EEF5" stroke="#13315C" stroke-width="0.8"/>
+  <text x="938" y="462" font-size="11" fill="#13315C" text-anchor="middle">Emergency</text>
+  <rect x="792" y="478" width="92" height="28" rx="6" fill="#E8EEF5" stroke="#13315C" stroke-width="0.8"/>
+  <text x="838" y="496" font-size="11" fill="#13315C" text-anchor="middle">Fintech</text>
+  <rect x="892" y="478" width="92" height="28" rx="6" fill="#E8EEF5" stroke="#13315C" stroke-width="0.8"/>
+  <text x="938" y="496" font-size="11" fill="#13315C" text-anchor="middle">Sales / CX</text>
+
+  <text x="792" y="540" font-size="11" fill="#8A8576">Loads into Tier&#160;1 + Tier&#160;2</text>
+  <text x="792" y="558" font-size="11" fill="#8A8576">at inference time.</text>
+
+  <!-- dashed feed from domain pack into inference band -->
+  <path d="M776 509 L760 509" fill="none" stroke="#BDB6A6" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+
+  <!-- legend -->
+  <rect x="40" y="748" width="14" height="14" rx="3" fill="#13315C"/>
+  <text x="60" y="759" font-size="11" fill="#5F6B7A">Governance &amp; trust spine</text>
+  <rect x="232" y="748" width="14" height="14" rx="3" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/>
+  <text x="252" y="759" font-size="11" fill="#5F6B7A">On-device inference</text>
+  <rect x="404" y="748" width="14" height="14" rx="3" fill="#FAEEDA" stroke="#BA7517" stroke-width="1"/>
+  <text x="424" y="759" font-size="11" fill="#5F6B7A">Cloud fallback (leaves device)</text>
+</svg>
