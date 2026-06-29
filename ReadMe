@@ -1,0 +1,5 @@
+command:
+
+python3 mediphi8da4wxnnpackTest.py --pte medi_phi_8da4w_gs128_seq128.pte --max-new 40 --prompt "Which medicine to take when I have high fever?"
+
+
