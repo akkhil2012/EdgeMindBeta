@@ -1,0 +1,114 @@
+System Identity
+EdgeMind — on-device medical AI assistant; no patient data leaves the device
+Fully offline — zero cloud inference dependency; works in disconnected clinical environments
+Target hardware — Snapdragon 8 Gen 3 (SM8650) Android phones/tablets; latency target < 300 ms for SLM
+ExecuTorch .pte format — Meta's portable model format; bundles weights + computation graph into a single binary that runs natively without Python runtime
+HIPAA-first posture — no cloud egress, on-device audit log, PII guardrails
+Model Stack
+Phi-3 Mini (microsoft/Phi-3-mini-4k-instruct) — the primary SLM; 3.8B parameters, int4 quantized
+medi_phi_8da4w_gs128_seq128.pte — the medical fine-tuned Phi-3 variant; first-tier responder
+phi3_mini_int4.pte — base Phi-3 Mini without medical fine-tuning; used as the RAG-tier re-ranker/generator
+LLM 7B (llm_7b.pte) — escalation-tier model for complex reasoning; ~1–5 s latency target
+all-MiniLM-L6-v2 (minilm_embed.pte) — 22 MB sentence embedding model; produces 384-dim vectors for RAG similarity search
+GuardModel (guard_classifier.pte) — 60M-param DistilBERT-based binary classifier; runs before every inference
+Whisper Small (whisper_small.pte) — audio encoder; planned for voice-input transcription
+LoRA adapter (lora_adapter.bin) — delta weights from on-device fine-tuning; layered on top of base SLM
+Quantization & Efficiency
+int4 group-wise GPTQ quantization — 4-bit weight quantization with group size 128; shrinks Phi-3 to ~2 GB
+torchao — PyTorch quantization library used during export to replace weights with AffineQuantizedTensor
+8da4w in filename — "8-bit dynamic activation, 4-bit weight" quantization scheme
+Qualcomm HTP (Hexagon Tensor Processor) — NPU accelerator on Snapdragon used for fast matrix ops; enabled via ExecuTorch's Qualcomm backend delegate
+XNNPACK — CPU fallback delegate when HTP is unavailable; mobile-optimized SIMD math library
+Backend delegation — ExecuTorch mechanism where graph partitions are offloaded to hardware accelerators at compile/export time, not runtime
+Model Export Pipeline
+torch.export — PyTorch's graph capture API that traces a model into a portable IR
+to_edge() → to_executorch() — ExecuTorch's two-stage lowering: graph → edge IR → on-device binary
+static input shape — exported models require fixed tensor dimensions; dynamic shapes must be declared at export time using dynamic_shapes
+export_phi3.py — export script supporting int4/int8/fp16, Qualcomm/XNNPACK/Vulkan backends, optional LoRA adapter hooks
+export_minilm.py — wraps MiniLM encoder in MiniLMEmbedWrapper that mean-pools and L2-normalizes internally; exports TWO Long-dtype inputs (input_ids + attention_mask)
+export_guard.py — can fine-tune DistilBERT on synthetic jailbreak/PII/medical-safety samples matching GuardModel.kt's regex patterns, then export; or use KoalaAI/Text-Moderation directly
+export_whisper.py — exports Whisper Small encoder; Qualcomm HTP backend for real-time audio
+build_kb_index.py — builds the FAISS knowledge-base index offline and serializes it as clinical_kb.faiss
+Inference Routing (Three-Tier Cascade)
+Three-tier cascade — every query flows: SLM → RAG-SLM → LLM escalation; each tier only fires if the previous confidence is below threshold
+CONFIDENCE_THRESHOLD = 0.70 — if SLM confidence < 0.70, RAG fires; if RAG confidence < 0.70, LLM escalates
+InferenceTool.route() — the central routing decision function; orchestrates all three tiers
+TaskType enum — AUTO, NER, TRIAGE, TRIAGE_WITH_RAG, INTENT, FORM_EXTRACT; routes different system prompts to the SLM
+preferLlm routing — keywords like "differential", "reasoning", "treatment" bypass the cascade and go directly to LLM
+InferencePath enum — SLM / RAG / LLM; attached to every result and visible in the chat UI metadata
+InferenceResult — data class carrying text, confidence, latencyMs, path, tokens, and any RAG chunks used
+SLM Inference Engine
+SlmInferenceEngine — manages ExecuTorchRunner + Tokenizer lifecycle; runs tokenization, forward pass, greedy decode, and confidence extraction
+buildPrompt() — constructs Phi-3's prompt format: <|system|>...<|end|><|user|>...<|end|><|assistant|>
+padOrTruncate() — right-pads token IDs to SEQ_LEN=128 with PAD_TOKEN_ID=32000, matching the static graph's expected input shape
+greedyDecode() — picks argmax over vocab (size 32,000) per position from the flat logits array
+extractConfidence() — computes softmax over first 100 logits as a proxy confidence signal (current implementation; not calibrated)
+SEQ_LEN = 128 — fixed context window the SLM was exported with; limits how much clinical context fits in one forward pass
+Mock mode — when native model isn't loaded, canned responses are returned; catch-all mock returns "I understand your query..." with confidence 0.78 (above threshold — never escalates)
+ExecuTorch JNI Bridge
+JNI (Java Native Interface) — the Android bridge between Kotlin and C++; every nativeXxx Kotlin declaration maps to a C++ function with a mangled name
+executorch_jni.cpp — the C++ file implementing all native calls; compiled into libexecutorch_jni.so
+EXECUTORCH_AVAILABLE — compile-time flag; when absent (no ExecuTorch NDK install), all native functions compile as stubs returning empty arrays
+Module::load() / Module::forward() — ExecuTorch C++ API; load() memory-maps the .pte file, forward() executes one inference pass
+Module::LoadMode::Mmap — memory-maps weights without mlock(); avoids ENOMEM on devices with small RLIMIT_MEMLOCK
+EValue — ExecuTorch's variant type wrapping tensors, scalars, or strings passed in/out of forward()
+from_blob() — creates an ExecuTorch tensor that borrows (does not copy) a raw data pointer; caller must keep the backing data alive through the forward() call
+method_meta("forward") — introspects the loaded .pte to read expected input count, shapes, and dtypes; logged on load to help diagnose InvalidArgument errors
+nativeForward — single Long-tensor path for the autoregressive SLM; input_ids shape [1, SEQ_LEN], dtype Long
+nativeForwardFloat — single Float-tensor path; available for audio feature / embedding inputs
+nativeForwardEmbed — dual Long-tensor path for MiniLM; passes both input_ids and attention_mask matching the model's two-input export signature
+Error::InvalidArgument (code 18) — returned when tensor count, dtype, or shape doesn't match what the exported graph expects
+Error::NotSupported (code 16) — typically indicates a static-shape model received a different-size input
+Tokenizer
+SentencePiece tokenizer — subword tokenization format used by Phi-3; tokenizer.model is the bundled asset
+pytorch_tokenizers library — ExecuTorch's C++ tokenizer library auto-detects HF JSON, TikToken, SentencePiece, or BPE format from file contents
+BOS/EOS tokens — nativeEncode adds BOS=1 (beginning-of-sequence) during encoding; critical for models that require it
+Vocabulary size = 32,000 — Phi-3 Mini's token vocabulary; used in greedyDecode's hardcoded vocabSize constant
+RAG Pipeline
+RAG (Retrieval-Augmented Generation) — queries are first embedded, matched against a knowledge base, and the top-k matching chunks are injected into the prompt before re-inference
+EmbedModel — wraps MiniLM; embeds a query string into a 384-dim float vector for FAISS similarity search
+FAISS (Facebook AI Similarity Search) — C++ vector similarity library; performs approximate nearest-neighbor search over the embedded knowledge base
+FaissIndex (faiss_jni.cpp) — JNI wrapper around FAISS; persists the index to clinical_kb.faiss on first build, reloads on subsequent launches
+Cosine similarity / score — each retrieved chunk gets a score (0–1); higher = semantically closer to the query
+RagChunk — data class: id, text (raw clinical knowledge snippet), score
+buildAugmentedPrompt() — wraps retrieved chunks + original query into a structured prompt; currently hardcodes "provide a structured triage assessment" as the instruction
+Demo knowledge base — 21 hardcoded ER-triage/ACS/PE/drug-interaction/SIRS text chunks in RagPipeline.DEMO_KNOWLEDGE_BASE; designed for ER triage demos, not general medical Q&A
+buildDemoIndex() — used on first launch or when clinical_kb.faiss doesn't exist; builds index from demo chunks using deterministic hash embeddings (not real MiniLM)
+kb_meta.txt — flat-file chunk registry (id|text) persisted alongside the FAISS index
+Security Layer
+GuardModel — prompt classifier; runs synchronously before EVERY inference; cannot be bypassed by agent code
+Guard categories — JAILBREAK, PII (SSN/Aadhar/credit card regex), MEDICAL_SAFETY (self-harm), INSTRUCTION_OVERRIDE, OFF_TOPIC
+Prompt hash (SHA-256, 16 chars) — blocked prompts are logged by hash, never by raw text; protects patient privacy even in the audit log
+IamService — on-device IAM; issues short-lived ES256 JWT capability tokens to agents
+Android Keystore — hardware-backed secure storage for the EC signing key; secp256r1 curve, SHA256withECDSA signature
+CapabilityToken — JWT with subject (agentId), scopes, issued-at, expiry; 30-minute TTL
+AgentRole / Scopes — DEFAULT (SLM + knowledge read), ELEVATED (+ LLM), SYSTEM (+ audit write + microphone); each request carries its token's scope set
+Token expiry validation — IamService.validateScope() throws TokenExpiredException before any tool executes if TTL elapsed
+MCP Architecture
+MCP (Model Context Protocol) — Anthropic-originated standard for structured agent-tool interaction; EdgeMind implements an on-device MCP server/client pair
+McpServer — central gate; executes in order: guardrail → IAM token validation → tool routing → handler execution
+McpClient — client-side agent that holds a token, invokes tools through the server, and relays results back to the UI
+ToolRegistry — maps toolId → (requiredScope, handler); register() wires each tool at app init
+ToolIds — RUN_INFERENCE_SLM, RUN_INFERENCE_LLM, VECTOR_SEARCH, AUDIT_LOG_WRITE
+ToolCall / ToolResult — structured request/response; ToolResult is a sealed class (Success, Blocked, Unauthorized, Error)
+InferenceTool — MCP tool handler for RUN_INFERENCE_SLM and RUN_INFERENCE_LLM; implements the three-tier cascade
+VectorTool — MCP tool handler for VECTOR_SEARCH; wraps RagPipeline.retrieve()
+AuditTool — MCP tool handler for AUDIT_LOG_WRITE; only accessible to SYSTEM-role tokens
+Audit Trail
+AuditJournal — append-only tamper-evident log; every inference, block, tool call, and training event is recorded
+AuditEntry (Room entity) — stored in SQLite via Room; fields include agentId, timestamp, eventType, inferencePathName, confidence, scopesJson, detail, signature
+Signed audit entries — each entry is signed with the same IAM EC key; allows offline forensic verification that logs weren't altered
+audit_entries Room table — persisted in AppDatabase; observeRecent() emits a Flow consumed by the UI's audit log panel
+On-Device Training
+LoRA (Low-Rank Adaptation) — attaches small trainable rank-8 matrices to attention layers; only adapter weights are updated, not the full 3.8B-param model
+LoRA rank=8 / alpha=16 — controls adapter expressivity vs. parameter count; rank 8 adds ~6M trainable params per transformer layer
+nativeTrainLora — JNI call to ExecuTorch training API; currently stubbed (logs "not compiled in"); designed for Snapdragon 8 Gen 3 NPU training
+Fragment training — splits the model into 4-layer segments to keep peak RAM under 800 MB; sequentially trains one fragment at a time
+InteractionDataset — SQLite-backed store (interactions Room table); records every user prompt + response + path + confidence for use as training data
+IdleScheduler / TrainingWorker — uses Android WorkManager to trigger LoRA training every 6 hours when the device is charging and idle; minimum 50 samples required
+On-device gradient updates — all training data and model updates stay on-device; no data ever reaches a cloud server
+Android & UI
+Jetpack Compose — declarative UI framework; AssistantScreen.kt + MetricsOverlay.kt are pure Compose
+AssistantViewModel — ViewModel holds all app state; initialises all engines at startup (load in parallel), handles sendMessage, drives the MCP client call
+MetricsOverlay — real-time debug panel surfacing active inference path, latency ms, confidence score, NPU utilization %, RAM usage, IAM token TTL, and guard status
+FAISS JNI (faiss_jni.cpp) + ExecuTorch JNI — two separate native .so libraries loaded at runtime; both gracefully fall back to Kotlin mock implementations when the native build or model assets are absent
