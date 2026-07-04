@@ -1,0 +1,38 @@
+import qai_hub
+import numpy as np
+
+FIXED_SEQ_LEN = 128
+
+# 1. Reference the already-hosted model instead of re-uploading.
+#    Find the ID on workbench.aihub.qualcomm.com → Models tab (looks like "mXXXXXXXX"),
+#    or list programmatically:
+#        for m in qai_hub.get_models(): print(m.model_id, m.name, m.date)
+model = qai_hub.get_model("mn18kz98m")   # ← your model ID
+print(f"Using hosted model: {model.model_id} ({model.name})")
+
+# 2a. Quantize job (replaces the deprecated --quantize_full_type w4a8)
+calib = {"input_ids": [np.random.randint(1, 32000, (1, FIXED_SEQ_LEN)).astype(np.int64)
+                       for _ in range(20)]}
+
+quantize_job = qai_hub.submit_quantize_job(
+    model=model,
+    calibration_data=calib,
+    weights_dtype=qai_hub.QuantizeDtype.INT4,      # w4
+    activations_dtype=qai_hub.QuantizeDtype.INT8,  # a8
+)
+print(f"Quantize job: https://workbench.aihub.qualcomm.com/jobs/{quantize_job.job_id}")
+quantize_job.wait()
+quantized_model = quantize_job.get_target_model()
+
+# 2b. Compile quantized ONNX → .pte (QNN context binary in ExecuTorch container)
+job = qai_hub.submit_compile_job(
+    model=quantized_model,
+    device=qai_hub.Device("Samsung Galaxy S24"),
+    options="--target_runtime executorch",
+    input_specs={"input_ids": ((1, FIXED_SEQ_LEN), "int64")},
+)
+print(f"Compile job: https://workbench.aihub.qualcomm.com/jobs/{job.job_id}")
+job.wait()
+
+# 3. Download the .pte
+job.get_target_model().download("model.pte")
