@@ -1,0 +1,235 @@
+"""
+Export MediPhi to Qualcomm HTP via Qualcomm AI Hub.
+
+Produces a .pte (ExecuTorch flatbuffer) with an embedded Hexagon context
+binary that runs directly on the Qualcomm HTP processor via the ExecuTorch
+QNN backend — no QNN SDK or Linux build machine required on your end.
+
+IMPORTANT: Run this in Google Colab (≥12 GB RAM), not on a Mac.
+           MediPhi is ~4B parameters; loading it locally needs ~8 GB RAM
+           and the Mac OOM-kills the process before ONNX export finishes.
+
+Setup (run once in Colab, in a fresh runtime with nothing else pre-installed):
+    !pip install -q qai-hub optimum optimum-onnx torch
+    !qai-hub configure --api_token <YOUR_TOKEN>
+    # Token: https://aihub.qualcomm.com → profile → API Token
+    #
+    # Note: optimum >=2.0 moved ONNX export support out into the separate
+    # "optimum-onnx" package. "optimum[exporters]" no longer exists as an
+    # extra — installing it will fail to resolve. optimum-onnx still
+    # registers itself under optimum.exporters.onnx, so the import below
+    # is unchanged.
+
+Output:
+    medi_phi_htp_<DEVICE>.pte  — run on-device via ExecuTorch + QNN runtime
+"""
+
+import os
+import qai_hub
+from optimum.exporters.onnx import main_export
+
+# ============================================================================
+# Configuration — edit these before running
+# ============================================================================
+
+MODEL_NAME    = "microsoft/MediPhi"
+FIXED_SEQ_LEN = 128
+
+# Target Qualcomm device. Full list: https://aihub.qualcomm.com/compute-hardware
+# "Samsung Galaxy S24"   → Snapdragon 8 Gen 3  (SM8650, HTP V75)
+# "Samsung Galaxy S23"   → Snapdragon 8 Gen 2  (SM8550, HTP V73)
+# "Samsung Galaxy S25"   → Snapdragon 8 Elite  (SM8750, HTP V79)
+DEVICE_NAME = "Samsung Galaxy S24"
+
+# Quantization applied by AI Hub during compilation (reduces .pte size):
+#   w8a8  → INT8 weight + INT8 activation  (~4 GB output)
+#   w8a16 → INT8 weight + INT16 activation (~4 GB, better accuracy)
+#   w4a8  → INT4 weight + INT8 activation  (~2 GB, recommended for mobile)
+QUANT = "w4a8"
+if not os.path.exists(ONNX_FILE):
+    main_export(
+        MODEL_NAME,
+        output=ONNX_DIR,
+        task="text-generation",
+        dtype="fp16",
+        no_post_process=True,
+        do_validation=False,
+        use_subprocess=True,
+    )
+else:
+    print(f"Skipping export — {ONNX_FILE} already exists")
+
+# ============================================================================
+# Step 1: Export MediPhi to ONNX via optimum
+# ============================================================================
+# optimum re-downloads the model from HuggingFace and exports to ONNX,
+# writing weights into a separate .onnx_data sidecar so no single file
+# exceeds protobuf limits.  This avoids the PyTorch minizip crash that
+# kills torch.jit.trace/save on large models.
+
+ONNX_DIR  = "mediphi_onnx"
+ONNX_FILE = os.path.join(ONNX_DIR, "model.onnx")
+
+print(f"Exporting {MODEL_NAME} to ONNX (fp16) ...")
+main_export(
+    MODEL_NAME,
+    output=ONNX_DIR,
+    task="text-generation",   # causal LM, no KV-cache outputs
+    dtype="fp16",             # halves weight size vs fp32
+    no_post_process=True,     # skip graph optimizations that can break HTP lowering
+    do_validation=False,      # skip reloading the torch model + onnxruntime session
+                               # side-by-side for output comparison — for a 4B model
+                               # that double-memory step is what OOMs a 12GB Colab runtime
+    use_subprocess=True,      # export in a child process so its peak memory is
+                               # released back to the OS when it exits
+)
+print(f"ONNX graph : {os.path.getsize(ONNX_FILE) / 1024**2:.1f} MB  ({ONNX_FILE})")
+
+# ============================================================================
+# Step 2: Upload ONNX directory to AI Hub
+# ============================================================================
+# Upload the whole directory so AI Hub sees both model.onnx and its
+# weight sidecar (model.onnx_data or model.onnx.data).
+
+print("Uploading to Qualcomm AI Hub ...")
+# ============================================================================
+# Step 2 (fixed): Sanitize ONNX dir, then upload to AI Hub
+# AI Hub only accepts .onnx / .data / .encodings / .bin files —
+# optimum also writes config/tokenizer JSONs, so we copy model files
+# into a clean dir and fix the weight-sidecar name if needed.
+# ============================================================================
+import shutil, glob, onnx
+
+CLEAN_DIR = "mediphi_onnx_clean"
+os.makedirs(CLEAN_DIR, exist_ok=True)
+
+print("Files in export dir:", os.listdir(ONNX_DIR))
+
+# 1. Copy the graph
+shutil.copy(os.path.join(ONNX_DIR, "model.onnx"), CLEAN_DIR)
+
+# 2. Copy the weight sidecar (name varies by optimum version)
+sidecar = None
+for pattern in ("model.onnx.data", "model.onnx_data", "model.data", "*.bin"):
+    matches = glob.glob(os.path.join(ONNX_DIR, pattern))
+    if matches:
+        sidecar = matches[0]
+        break
+
+if sidecar is None:
+    raise FileNotFoundError(f"No weight sidecar found in {ONNX_DIR} — files: {os.listdir(ONNX_DIR)}")
+
+sidecar_name = os.path.basename(sidecar)
+print(f"Weight sidecar: {sidecar_name} ({os.path.getsize(sidecar)/1024**3:.1f} GB)")
+
+if sidecar_name.endswith((".data", ".bin")):
+    # Already an allowed extension — copy as-is
+    shutil.copy(sidecar, CLEAN_DIR)
+else:
+    # e.g. model.onnx_data — rename to model.data AND rewrite internal refs
+    NEW_NAME = "model.data"
+    print(f"Renaming sidecar {sidecar_name} → {NEW_NAME} and patching graph refs ...")
+    shutil.copy(sidecar, os.path.join(CLEAN_DIR, NEW_NAME))
+
+    graph_path = os.path.join(CLEAN_DIR, "model.onnx")
+    m = onnx.load(graph_path, load_external_data=False)  # graph only, no 8GB load
+    patched = 0
+    for init in m.graph.initializer:
+        if init.data_location == onnx.TensorProto.EXTERNAL:
+            for kv in init.external_data:
+                if kv.key == "location" and kv.value == sidecar_name:
+                    kv.value = NEW_NAME
+                    patched += 1
+    onnx.save(m, graph_path)
+    print(f"Patched {patched} initializer references")
+
+print("Clean dir contents:", os.listdir(CLEAN_DIR))
+
+# 3. Sanity check: graph must load with weights resolvable from the clean dir
+onnx.checker.check_model(os.path.join(CLEAN_DIR, "model.onnx"))
+print("ONNX check passed")
+
+print("Uploading to Qualcomm AI Hub ...")
+hub_model = qai_hub.upload_model(CLEAN_DIR)
+print(f"Uploaded: {hub_model}")
+print(f"Uploaded: {hub_model}")
+
+# ============================================================================
+# Step 3: Compile for Qualcomm HTP → .pte
+# ============================================================================
+# --target_runtime executorch
+#     AI Hub compiles the ONNX graph into a Hexagon context binary and wraps
+#     it in an ExecuTorch flatbuffer (.pte).  The result runs on-device via
+#     the ExecuTorch runtime linked with the QNN backend delegate.
+#
+# --quantize_full_type <QUANT>
+#     Post-training quantization applied by AI Hub using representative data.
+#     Reduces model size and speeds up HTP inference significantly.
+
+print(f"Compiling for {DEVICE_NAME} (quantization: {QUANT}) ...")
+compile_job = qai_hub.submit_compile_job(
+    model=hub_model,
+    device=qai_hub.Device(DEVICE_NAME),
+    options=f"--target_runtime executorch --quantize_full_type {QUANT}",
+    input_specs={"input_ids": ((1, FIXED_SEQ_LEN), "int64")},
+    name=f"MediPhi_{QUANT}_{DEVICE_NAME.replace(' ', '_')}",
+)
+print(f"Job ID: {compile_job.job_id}")
+print("Waiting for compile job (usually 5-15 minutes for a 4B model) ...")
+compile_job.wait()
+
+status = compile_job.get_status()
+print(f"Status: {status}")
+
+if not status.success:
+    raise RuntimeError(
+        f"Compile job failed: {status.message}\n"
+        f"Check logs at https://aihub.qualcomm.com/jobs/{compile_job.job_id}"
+    )
+
+# ============================================================================
+# Step 4: Download the .pte
+# ============================================================================
+output_path = f"medi_phi_htp_{QUANT}_{DEVICE_NAME.replace(' ', '_')}.pte"
+compiled_model = compile_job.get_target_model()
+compiled_model.download(output_path)
+
+size_mb = os.path.getsize(output_path) / 1024**2
+print(f"\n✓ Downloaded: {output_path}  ({size_mb:.0f} MB)")
+print(f"  Runtime : ExecuTorch + Qualcomm QNN HTP backend")
+print(f"  Device  : {DEVICE_NAME}")
+print(f"  Quant   : {QUANT}")
+print(f"\n  Deploy via ExecuTorch Android runtime built with -DEXECUTORCH_BUILD_QNN=ON")
+print(f"  Input   : int64 tensor [1, {FIXED_SEQ_LEN}]  (token IDs, right-padded)")
+print(f"  Output  : float tensor [1, {FIXED_SEQ_LEN}, vocab_size]  (logits)")
+
+# ============================================================================
+# Step 5 (optional): Verify with a cloud inference job on real HTP hardware
+# ============================================================================
+print("\nSubmitting cloud inference job to verify .pte on real HTP ...")
+import numpy as np
+
+dummy_ids = np.ones((1, FIXED_SEQ_LEN), dtype=np.int64)
+
+inference_job = qai_hub.submit_inference_job(
+    model=compiled_model,
+    device=qai_hub.Device(DEVICE_NAME),
+    inputs={"input_ids": [dummy_ids]},
+    name=f"MediPhi_verify",
+)
+inference_job.wait()
+
+inf_status = inference_job.get_status()
+if inf_status.success:
+    outputs = inference_job.get_output_datasets()
+    logits = outputs["output_0"][0]
+    print(f"✓ Inference OK — output shape: {logits.shape}")
+    print(f"  Top token at position 0: {int(logits[0, 0, :].argmax())}")
+else:
+    print(f"Inference check failed: {inf_status.message}")
+
+# In Google Colab, download the .pte to your local machine:
+from google.colab import files
+files.download(output_path)
+
+
