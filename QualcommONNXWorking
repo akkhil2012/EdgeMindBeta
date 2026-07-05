@@ -1,0 +1,306 @@
+"""
+Export MediPhi to Qualcomm HTP via Qualcomm AI Hub.
+
+Produces a .pte (ExecuTorch flatbuffer) with an embedded Hexagon context
+binary that runs directly on the Qualcomm HTP processor via the ExecuTorch
+QNN backend — no QNN SDK or Linux build machine required on your end.
+
+IMPORTANT: Run this on a high-RAM runtime (Kaggle TPU VM or Colab ≥12 GB),
+           not on a Mac. MediPhi is ~4B parameters; loading it locally
+           needs ~8 GB RAM and the Mac OOM-kills the process before the
+           ONNX export finishes.
+
+Setup (run once, in a fresh runtime with nothing else pre-installed):
+    !pip install -q qai-hub optimum optimum-onnx torch
+    !qai-hub configure --api_token <YOUR_TOKEN>
+    # Token: https://aihub.qualcomm.com → profile → API Token
+    #
+    # Note: optimum >=2.0 moved ONNX export support out into the separate
+    # "optimum-onnx" package. "optimum[exporters]" no longer exists as an
+    # extra — installing it will fail to resolve. optimum-onnx still
+    # registers itself under optimum.exporters.onnx, so the import below
+    # is unchanged.
+
+Output:
+    medi_phi_htp_<QUANT>_<DEVICE>.pte — downloaded to the VM disk, then
+    pushed to your local machine's Downloads folder via
+    google.colab.files.download() when in Colab. Outside Colab, the .pte
+    is simply saved to the current working directory.
+"""
+
+import os
+
+# Redirect the HuggingFace download cache off the quota'd disk.
+# Must be set BEFORE any HF download happens in this session.
+os.environ["HF_HOME"] = "/tmp/hf_cache"
+
+# ============================================================================
+# Step 0: Configure Qualcomm AI Hub credentials (required every session)
+# Token: aihub.qualcomm.com → profile → Settings → API Token.
+# On Kaggle: Add-ons → Secrets → add secret named QAI_HUB_TOKEN, toggle ON.
+# ============================================================================
+import subprocess
+
+try:
+    from kaggle_secrets import UserSecretsClient          # Kaggle
+    token = UserSecretsClient().get_secret("QAI_HUB_TOKEN")
+except ImportError:
+    try:
+        from google.colab import userdata                 # Colab
+        token = userdata.get("QAI_HUB_TOKEN")
+    except ImportError:
+        token = os.environ.get("QAI_HUB_TOKEN", "")       # anywhere else
+
+if not token:
+    raise RuntimeError(
+        "QAI_HUB_TOKEN not found. On Kaggle: Add-ons → Secrets → "
+        "add 'QAI_HUB_TOKEN' and toggle it on for this notebook."
+    )
+
+subprocess.run(["qai-hub", "configure", "--api_token", token], check=True)
+print("AI Hub credentials configured")
+
+import qai_hub
+from optimum.exporters.onnx import main_export
+
+# ============================================================================
+# Configuration — edit these before running
+# ============================================================================
+
+MODEL_NAME    = "microsoft/MediPhi"
+FIXED_SEQ_LEN = 128
+
+# Target Qualcomm device. Full list: https://aihub.qualcomm.com/compute-hardware
+# "Samsung Galaxy S24"   → Snapdragon 8 Gen 3  (SM8650, HTP V75)
+# "Samsung Galaxy S23"   → Snapdragon 8 Gen 2  (SM8550, HTP V73)
+# "Samsung Galaxy S25"   → Snapdragon 8 Elite  (SM8750, HTP V79)
+DEVICE_NAME = "Samsung Galaxy S24"
+
+# Quantization applied by AI Hub during compilation (reduces .pte size):
+#   w8a8  → INT8 weight + INT8 activation  (~4 GB output)
+#   w8a16 → INT8 weight + INT16 activation (~4 GB, better accuracy)
+#   w4a8  → INT4 weight + INT8 activation  (~2 GB, recommended for mobile)
+QUANT = "w4a8"
+
+# Keep the big intermediate artifacts on /tmp (outside Kaggle's ~20 GB
+# /kaggle/working output quota). Only the final ~2 GB .pte goes to cwd.
+ONNX_DIR  = "/tmp/mediphi_onnx"
+ONNX_FILE = os.path.join(ONNX_DIR, "model.onnx")
+CLEAN_DIR = "/tmp/mediphi_onnx_clean"
+
+# ============================================================================
+# Step 1: Export MediPhi to ONNX via optimum
+# ============================================================================
+# optimum re-downloads the model from HuggingFace and exports to ONNX,
+# writing weights into a separate .onnx_data sidecar so no single file
+# exceeds protobuf limits.  This avoids the PyTorch minizip crash that
+# kills torch.jit.trace/save on large models.
+
+if not os.path.exists(ONNX_FILE):
+    print(f"Exporting {MODEL_NAME} to ONNX (fp16) ...")
+    main_export(
+        MODEL_NAME,
+        output=ONNX_DIR,
+        task="text-generation",   # causal LM, no KV-cache outputs
+        dtype="fp16",             # halves weight size vs fp32
+        no_post_process=True,     # skip graph optimizations that can break HTP lowering
+        do_validation=False,      # skip reloading the torch model + onnxruntime session
+                                  # side-by-side for output comparison — for a 4B model
+                                  # that double-memory step is what OOMs a 12GB runtime
+        use_subprocess=True,      # export in a child process so its peak memory is
+                                  # released back to the OS when it exits
+    )
+else:
+    print(f"Skipping export — {ONNX_FILE} already exists")
+
+print(f"ONNX graph : {os.path.getsize(ONNX_FILE) / 1024**2:.1f} MB  ({ONNX_FILE})")
+
+# Free the ~8 GB HF download cache — export is done, it's no longer needed,
+# and the sanitize step below needs the disk headroom for the sidecar copy.
+import shutil
+shutil.rmtree("/tmp/hf_cache", ignore_errors=True)
+
+# ============================================================================
+# Step 2: Sanitize ONNX dir, then upload to AI Hub
+# ============================================================================
+# AI Hub only accepts .onnx / .data / .encodings / .bin files —
+# optimum also writes config/tokenizer JSONs, so we copy model files
+# into a clean dir and fix the weight-sidecar name if needed.
+
+import glob
+import onnx
+
+os.makedirs(CLEAN_DIR, exist_ok=True)
+
+print("Files in export dir:", os.listdir(ONNX_DIR))
+
+# 1. Copy the graph
+shutil.copy(os.path.join(ONNX_DIR, "model.onnx"), CLEAN_DIR)
+
+# 2. Copy the weight sidecar (name varies by optimum version)
+sidecar = None
+for pattern in ("model.onnx.data", "model.onnx_data", "model.data", "*.bin"):
+    matches = glob.glob(os.path.join(ONNX_DIR, pattern))
+    if matches:
+        sidecar = matches[0]
+        break
+
+if sidecar is None:
+    raise FileNotFoundError(
+        f"No weight sidecar found in {ONNX_DIR} — files: {os.listdir(ONNX_DIR)}"
+    )
+
+sidecar_name = os.path.basename(sidecar)
+print(f"Weight sidecar: {sidecar_name} ({os.path.getsize(sidecar)/1024**3:.1f} GB)")
+
+if sidecar_name.endswith((".data", ".bin")):
+    # Already an allowed extension — copy as-is
+    shutil.copy(sidecar, CLEAN_DIR)
+else:
+    # e.g. model.onnx_data — rename to model.data AND rewrite internal refs
+    NEW_NAME = "model.data"
+    print(f"Renaming sidecar {sidecar_name} → {NEW_NAME} and patching graph refs ...")
+    shutil.copy(sidecar, os.path.join(CLEAN_DIR, NEW_NAME))
+
+    graph_path = os.path.join(CLEAN_DIR, "model.onnx")
+    m = onnx.load(graph_path, load_external_data=False)  # graph only, no 8GB load
+
+    def all_tensors(model):
+        """Walk every tensor: initializers + Constant-node attributes + subgraphs."""
+        yield from model.graph.initializer
+        stack = [model.graph]
+        while stack:
+            g = stack.pop()
+            for node in g.node:
+                for attr in node.attribute:
+                    if attr.HasField("t"):
+                        yield attr.t
+                    yield from attr.tensors
+                    if attr.HasField("g"):
+                        stack.append(attr.g)
+                    stack.extend(attr.graphs)
+
+    patched = 0
+    for t in all_tensors(m):
+        if t.data_location == onnx.TensorProto.EXTERNAL:
+            for kv in t.external_data:
+                if kv.key == "location" and kv.value == sidecar_name:
+                    kv.value = NEW_NAME
+                    patched += 1
+
+    onnx.save(m, graph_path)
+    print(f"Patched {patched} external-data references")
+
+print("Clean dir contents:", os.listdir(CLEAN_DIR))
+
+# 3. Sanity check: graph must load with weights resolvable from the clean dir
+onnx.checker.check_model(os.path.join(CLEAN_DIR, "model.onnx"))
+print("ONNX check passed")
+
+print("Uploading to Qualcomm AI Hub ...")
+hub_model = qai_hub.upload_model(CLEAN_DIR)
+print(f"Uploaded: {hub_model}")
+
+# ============================================================================
+# Step 3: Compile for Qualcomm HTP → .pte
+# ============================================================================
+# --target_runtime executorch
+#     AI Hub compiles the ONNX graph into a Hexagon context binary and wraps
+#     it in an ExecuTorch flatbuffer (.pte).  The result runs on-device via
+#     the ExecuTorch runtime linked with the QNN backend delegate.
+#
+# --quantize_full_type <QUANT>
+#     Post-training quantization applied by AI Hub using representative data.
+#     Reduces model size and speeds up HTP inference significantly.
+
+print(f"Compiling for {DEVICE_NAME} (quantization: {QUANT}) ...")
+compile_job = qai_hub.submit_compile_job(
+    model=hub_model,
+    device=qai_hub.Device(DEVICE_NAME),
+    options=f"--target_runtime executorch --quantize_full_type {QUANT}",
+    input_specs={"input_ids": ((1, FIXED_SEQ_LEN), "int64")},
+    name=f"MediPhi_{QUANT}_{DEVICE_NAME.replace(' ', '_')}",
+)
+print(f"Job ID : {compile_job.job_id}")
+print(f"Job URL: https://aihub.qualcomm.com/jobs/{compile_job.job_id}")
+print("Waiting for compile job (usually 5-15 minutes for a 4B model) ...")
+compile_job.wait()
+
+status = compile_job.get_status()
+print(f"Status: {status}")
+
+if not status.success:
+    raise RuntimeError(
+        f"Compile job failed: {status.message}\n"
+        f"Check logs at https://aihub.qualcomm.com/jobs/{compile_job.job_id}"
+    )
+
+# ============================================================================
+# Step 4: Download the compiled .pte to local disk
+# ============================================================================
+# compiled_model.download() pulls the .pte from AI Hub's servers onto the
+# disk of the machine running this script (the notebook VM).  We then
+# verify it landed intact before offering it to the browser.
+
+output_path = os.path.abspath(
+    f"medi_phi_htp_{QUANT}_{DEVICE_NAME.replace(' ', '_')}.pte"
+)
+
+print("Downloading compiled .pte from AI Hub ...")
+compiled_model = compile_job.get_target_model()
+compiled_model.download(output_path)
+
+if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+    raise RuntimeError(f"Download failed — {output_path} missing or empty")
+
+size_mb = os.path.getsize(output_path) / 1024**2
+print(f"\n✓ Saved to local disk: {output_path}  ({size_mb:.0f} MB)")
+print(f"  Runtime : ExecuTorch + Qualcomm QNN HTP backend")
+print(f"  Device  : {DEVICE_NAME}")
+print(f"  Quant   : {QUANT}")
+print(f"\n  Deploy via ExecuTorch Android runtime built with -DEXECUTORCH_BUILD_QNN=ON")
+print(f"  Input   : int64 tensor [1, {FIXED_SEQ_LEN}]  (token IDs, right-padded)")
+print(f"  Output  : float tensor [1, {FIXED_SEQ_LEN}, vocab_size]  (logits)")
+
+# ============================================================================
+# Step 5 (optional): Verify with a cloud inference job on real HTP hardware
+# ============================================================================
+print("\nSubmitting cloud inference job to verify .pte on real HTP ...")
+import numpy as np
+
+dummy_ids = np.ones((1, FIXED_SEQ_LEN), dtype=np.int64)
+
+inference_job = qai_hub.submit_inference_job(
+    model=compiled_model,
+    device=qai_hub.Device(DEVICE_NAME),
+    inputs={"input_ids": [dummy_ids]},
+    name="MediPhi_verify",
+)
+inference_job.wait()
+
+inf_status = inference_job.get_status()
+if inf_status.success:
+    outputs = inference_job.get_output_datasets()
+    logits = outputs["output_0"][0]
+    print(f"✓ Inference OK — output shape: {logits.shape}")
+    print(f"  Top token at position 0: {int(logits[0, 0, :].argmax())}")
+else:
+    print(f"Inference check failed: {inf_status.message}")
+
+# ============================================================================
+# Step 6: Push the .pte from the notebook VM to YOUR local machine
+# ============================================================================
+# In Colab, files.download() triggers a browser download to your laptop's
+# Downloads folder.  Outside Colab (e.g. Kaggle), the file is already on
+# the VM disk at output_path, so we just skip this step gracefully.
+#
+# NOTE: a w4a8 .pte is ~2 GB — the browser download can take several
+# minutes and Colab's download bar sometimes looks stalled. Don't close
+# the tab until the browser shows the download as complete.
+
+try:
+    from google.colab import files
+    print(f"\nTriggering browser download of {os.path.basename(output_path)} ...")
+    files.download(output_path)
+except ImportError:
+    print(f"\nNot running in Colab — .pte is on the VM disk at:\n  {output_path}")
